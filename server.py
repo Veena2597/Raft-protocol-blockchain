@@ -12,7 +12,7 @@ SERVER = socket.gethostbyname(socket.gethostname())
 FORMAT = 'utf-8'
 DISCONNECT_MESSAGE = "DISCONNECTED"
 
-# varibles
+# variables
 leader = 0
 transactions_log = []
 timeout = 10
@@ -62,13 +62,14 @@ class Server:
         self.candidateID = int(port) % 5050
         self.leader = None
         self.transactions_log = []
-        self.timeout = 10
+        self.timeout = 8 + 2*self.candidateID
         self.local_log = []
         self.current_role = 'FOLLOWER'
         self.current_phase = 'Leader_election'
         self.current_term = 0
         self.heartbeat_received = 0
         self.majority_votes = 1
+        self.balance_table = []
 
     def startNetwork(self):
         while True:
@@ -80,17 +81,27 @@ class Server:
 
     def beginRAFT(self):
         time.sleep(self.timeout)
-        if heartbeat_received == 0 and current_role == 'FOLLOWER':
+        if (self.leader is None) and (current_role == 'FOLLOWER'):
             self.current_role = 'CANDIDATE'
-            log_term = 1
-            if len(self.local_log) > 0:
-                log_term = self.local_log[len(self.local_log) - 1].getTerm()
-            self.current_term += 1
-            vote_request = {'Type': 'LEADER_ELECTION', 'ID': self.candidateID, 'Term': self.current_term,
-                            'LogIndex': len(self.local_log), 'LogTerm': log_term}
-            message = pickle.dumps(vote_request)
-            for sock in self.message_sockets:
-                sock.sendall(bytes(message))
+            self.requestVotes()
+
+    def requestVotes(self):
+        log_term = 1
+        if len(self.local_log) > 0:
+            log_term = self.local_log[len(self.local_log) - 1].getTerm()
+        self.current_term += 1
+        vote_request = {'Type': 'LEADER_ELECTION', 'ID': self.candidateID, 'Term': self.current_term,
+                        'LogIndex': len(self.local_log), 'LogTerm': log_term}
+        message = pickle.dumps(vote_request)
+        for sock in self.message_sockets:
+            sock.sendall(bytes(message))
+
+    def appendEntries(self):
+        for i in self.transactions_log:
+            new_entry = Log(len(local_log) + 1, self.current_term, i)
+
+            self.local_log.append(new_entry)
+            self.transactions_log.remove(i)
 
     def sendHeartbeat(self):
         while self.leader == self.candidateID:
@@ -124,6 +135,8 @@ class Server:
                         self.current_role = 'LEADER'
                         send_heartbeat = threading.Thread(target=self.sendHeartbeat)
                         send_heartbeat.start()
+                        append_entries = threading.Thread(target=self.appendEntries)
+                        append_entries.start()
                         new_leader = {'Type': 'NEW_LEADER', 'ID': self.candidateID, 'Term': self.current_term}
                         message = pickle.dumps(new_leader)
                         for sock in self.message_sockets:
@@ -136,11 +149,22 @@ class Server:
 
             elif x['Type'] == 'ACCEPT_MESSAGE':
                 pass
+
             elif x['Type'] == 'COMMIT_MESSAGE':
                 pass
+
             elif x['Type'] == 'HEARTBEAT':
                 heartbeat_time = datetime.datetime.now()
                 self.heartbeat_received = 1
+
+            elif x['Type'] == 'CLIENT_MESSAGE':
+                if self.leader == self.candidateID:
+                    if x['Transaction'] == 'T':
+                        new_transaction = {'Sender': x['Sender'], 'Receiver': x['Receiver'], 'Amount': x['Amount']}
+                        transactions_log.append(new_transaction)
+                    elif x['Transaction'] == 'B':
+                        message = self.balance_table[x['Client']]
+                        connection.sendall(bytes(message))
 
 
 if __name__ == '__main__':
