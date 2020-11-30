@@ -5,23 +5,53 @@ import pickle
 import sys
 import time
 import datetime
+import hashlib
 
 # macros
 CONFIG_FILE = 'config.cfg'
 SERVER = socket.gethostbyname(socket.gethostname())
-FORMAT = 'utf-8'
-DISCONNECT_MESSAGE = "DISCONNECTED"
 
-# variables
-leader = 0
-transactions_log = []
-timeout = 10
-local_log = []
-servers = []
-current_role = 'Follower'
-current_phase = 'Leader_election'
-current_term = 1
-heartbeat_received = 0
+
+class Node:
+    def __init__(self, term):
+        self.term = term
+        self.Phash = None
+        self.nonce = None
+        self.tx = []
+        self.numTx = 0
+
+    def addTx(self, tx):
+        self.tx.append(tx)
+        self.numTx += 1
+        self.updateNonce()
+
+    def updatePhash(self, tx, nonce):
+        tx_string = ''
+        for i in tx:
+            if i is not None:
+                tx_string += i['Sender'] + ' ' + i['Receiver'] + ' ' + str(i['Amount']) + ' '
+            else:
+                tx_string += 'NULL '
+        hash_string = tx_string + str(nonce)
+        self.Phash = hashlib.sha256(hash_string.encode()).hexdigest()
+
+    def updateNonce(self):
+        self.nonce = len(self.tx)
+
+
+class Blockchain:
+    def __init__(self):
+        self.index = 0
+        self.chain = []
+        self.prevTx = []
+        self.prevNonce = None
+
+    def addBlock(self, block):
+        block.updateHash(self.prevTx, self.prevNonce)
+        self.chain.append(block)
+        self.index += 1
+        self.prevTx = block.tx
+        self.prevNonce = block.nonce
 
 
 class Log:
@@ -61,14 +91,18 @@ class Server:
 
         self.candidateID = int(port) % 5050
         self.leader = None
-        self.transactions_log = []
-        self.timeout = 8 + 2*self.candidateID
-        self.local_log = []
+        self.timeout = 8 + 2 * self.candidateID
         self.current_role = 'FOLLOWER'
         self.current_phase = 'Leader_election'
         self.current_term = 0
         self.heartbeat_received = 0
         self.majority_votes = 1
+
+        self.current_node = None  # retreive from saved configuration
+        self.transactions_log = []
+        self.local_log = []
+        self.blockchain = Blockchain()
+        self.blockchain.addBlock(self.current_node)
         self.balance_table = []
 
     def startNetwork(self):
@@ -81,7 +115,7 @@ class Server:
 
     def beginRAFT(self):
         time.sleep(self.timeout)
-        if (self.leader is None) and (current_role == 'FOLLOWER'):
+        if (self.leader is None) and (self.current_role == 'FOLLOWER'):
             self.current_role = 'CANDIDATE'
             self.requestVotes()
 
@@ -97,11 +131,19 @@ class Server:
             sock.sendall(bytes(message))
 
     def appendEntries(self):
+        if self.current_node is None:
+            self.current_node = Node(self.current_term)
         for i in self.transactions_log:
-            new_entry = Log(len(local_log) + 1, self.current_term, i)
-
+            new_entry = Log(len(self.local_log) + 1, self.current_term, i)
             self.local_log.append(new_entry)
             self.transactions_log.remove(i)
+
+    def addBlockchain(self, transaction):
+        if self.current_node.numTx < 3:
+            self.current_node.addTx(transaction)
+        else:
+            self.blockchain.addBlock(self.current_node)
+            self.current_node = Node(self.current_term)
 
     def sendHeartbeat(self):
         while self.leader == self.candidateID:
@@ -151,7 +193,8 @@ class Server:
                 pass
 
             elif x['Type'] == 'COMMIT_MESSAGE':
-                pass
+                trans = {'Sender': x['Sender'], 'Receiver': x['Receiver'], 'Amount': x['Amount']}
+                self.addBlockchain(trans)
 
             elif x['Type'] == 'HEARTBEAT':
                 heartbeat_time = datetime.datetime.now()
@@ -161,7 +204,7 @@ class Server:
                 if self.leader == self.candidateID:
                     if x['Transaction'] == 'T':
                         new_transaction = {'Sender': x['Sender'], 'Receiver': x['Receiver'], 'Amount': x['Amount']}
-                        transactions_log.append(new_transaction)
+                        self.transactions_log.append(new_transaction)
                     elif x['Transaction'] == 'B':
                         message = self.balance_table[x['Client']]
                         connection.sendall(bytes(message))

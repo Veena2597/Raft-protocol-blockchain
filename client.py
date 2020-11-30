@@ -9,8 +9,6 @@ import datetime
 # macros
 CONFIG_FILE = 'state.cfg'
 SERVER = socket.gethostbyname(socket.gethostname())
-FORMAT = 'utf-8'
-DISCONNECT_MESSAGE = "DISCONNECTED"
 
 
 class Client:
