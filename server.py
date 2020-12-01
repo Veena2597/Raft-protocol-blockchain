@@ -6,16 +6,17 @@ import sys
 import time
 import datetime
 import hashlib
+from configparser import ConfigParser
 
 # macros
-CONFIG_FILE = 'config.cfg'
+CONFIG_FILE = 'config.ini'
 SERVER = socket.gethostbyname(socket.gethostname())
 
 
 class Node:
     def __init__(self, term):
         self.term = term
-        self.phash = ''
+        self.prevhash = ''
         self.nonce = 0
         self.tx = ['NULL', 'NULL', 'NULL']
         self.numTx = 0
@@ -23,10 +24,8 @@ class Node:
     def addTx(self, txdata):
         self.tx[self.numTx] = txdata
         self.numTx += 1
-        print(self.tx)
         if self.numTx < 3:
             if self.validatePhash(self.tx, self.nonce):
-                print(self.phash)
                 return 1
             else:
                 self.nonce += 1
@@ -34,7 +33,6 @@ class Node:
         else:
             while self.nonce < 50:
                 if self.validatePhash(self.tx, self.nonce):
-                    print(self.phash)
                     return 1
                 else:
                     self.nonce += 1
@@ -47,7 +45,7 @@ class Node:
         phash = hashlib.sha256(hash_string.encode()).hexdigest()
         print(phash)
         if (phash[-1] == '0') or (phash[-1] == '1') or (phash[-1] == '2'):
-            self.phash = phash
+            self.prevhash = phash
             return 1
         else:
             return 0
@@ -57,12 +55,14 @@ class Blockchain:
     def __init__(self):
         self.index = 0
         self.chain = []
-        self.prevPhash = ''
+        self.prevPhash = 'NULL'
 
     def addBlock(self, block):
+        temp = block.prevhash
+        block.prevhash = self.prevPhash
+        self.prevPhash = temp
         self.chain.append(block)
         self.index += 1
-        self.prevPhash = block.phash
 
 
 class Server:
@@ -75,11 +75,13 @@ class Server:
         self.servers = []
         self.message_sockets = {}
 
-        with open(CONFIG_FILE, 'r') as file:
-            for line in file:
-                line = int(line.strip())
-                if line != port:
-                    self.servers.append(line)
+        self.config = ConfigParser(allow_no_value=True)
+        self.config.read('config.ini')
+        self.servers = self.config.get('main', 'Servers').split('\n')
+        self.servers = [int(x) for x in self.servers]
+        for i in self.servers:
+            if i == port:
+                self.servers.remove(i)
 
         for i in self.servers:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -91,7 +93,9 @@ class Server:
                 logging.debug("[EXCEPTION] {}".format(exc))
 
         self.candidateID = str(port)
-        self.leader = None  # TODO: The leader needs to be retrieved from saved configuration
+        self.leader = None
+        if self.config.get('main', 'Leader'):
+            self.leader = self.config.get('main', 'Leader')
         self.timeout = 10
         self.election_timeout = 8 + 5 * (port % 5050)
         self.current_role = 'FOLLOWER'
@@ -103,10 +107,14 @@ class Server:
             self.phase1_votes = 0
             self.phase2_votes = 0
 
-        self.current_node = None  # TODO: The current node needs to be retrieved from saved configuration
+        self.current_node = None
+        if self.config.get('blockchain', 'current_node'):
+            self.current_node = self.config.get('blockchain', 'current_node')
         self.transactions_log = []
         self.blockchain = Blockchain()
-        self.balance_table = {'A': 100, 'B': 100, 'C': 100}
+        self.balance_table = dict(self.config.items('balance'))
+        for i in self.balance_table.keys():
+            self.balance_table[i] = int(self.balance_table[i])
 
     def startNetwork(self):
         if self.leader is None:
@@ -143,6 +151,9 @@ class Server:
             self.blockchain.addBlock(self.current_node)
             self.updateBalanceTable(transaction['S'], transaction['R'], transaction['A'])
             self.current_node = Node(self.current_term)
+            if self.leader == self.candidateID:
+                # TODO write to configuration file: balance, blockchain and previous node
+                pass
 
     def updateBalanceTable(self, sender, receiver, amount):
         self.balance_table[sender] -= amount
@@ -163,8 +174,9 @@ class Server:
             x = pickle.loads(msg)
             logging.debug("[MESSAGE] {}".format(x))
 
-            if datetime.datetime.now() > (heartbeat_time + datetime.timedelta(seconds=(self.timeout))):
+            if datetime.datetime.now() > (heartbeat_time + datetime.timedelta(seconds=(1.5 * self.timeout))):
                 self.heartbeat_received = 0
+                self.beginRAFT()
 
             if x['Type'] == 'LEADER_ELECTION':
                 if (self.current_term <= x['Term']) and (self.vote_casted == 0):
