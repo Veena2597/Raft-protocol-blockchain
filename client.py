@@ -14,7 +14,7 @@ SERVER = socket.gethostbyname(socket.gethostname())
 class Client:
     def __init__(self, port):
         ADDRESS = (SERVER, port)
-        self.clientID = int(port) % 6000
+        self.clientID = chr(ord('A')+int(port) % 6000)
         self.leader = 5051  # need to retrieve from state.cfg
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -31,11 +31,14 @@ class Client:
 
             if s[0] == 'T' or s[0] == 't':
                 logging.debug("[TRANSFER TRANSACTION] {}".format(s))
-                transaction = {'Type': 'CLIENT_MESSAGE', 'Transaction': 'T', 'Sender': s[1], 'Receiver': s[2],
-                               'Amount': s[3]}
+                transaction = {'Type': 'CLIENT_MESSAGE', 'Transaction': 'T', 'S': s[1], 'R': s[2],
+                               'A': int(s[3])}
 
             elif s[0] == 'B' or s[0] == 'b':
                 transaction = {'Type': 'CLIENT_MESSAGE', 'Transaction': 'B', 'Client': self.clientID}
+
+            else:
+                print("Incorrect Transaction")
 
             message = pickle.dumps(transaction)
             self.client_socket.sendall(bytes(message))
