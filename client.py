@@ -9,6 +9,7 @@ import datetime
 # macros
 CONFIG_FILE = 'state.cfg'
 SERVER = socket.gethostbyname(socket.gethostname())
+FORMAT = 'utf-8'
 
 
 class Client:
@@ -19,6 +20,7 @@ class Client:
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.client_socket.connect((SERVER, self.leader))
+        self.status = 1
         input_transactions = threading.Thread(target=self.inputTransactions)
         input_transactions.start()
         listen_transactions = threading.Thread(target=self.listenTransactions)
@@ -26,28 +28,31 @@ class Client:
 
     def inputTransactions(self):
         while True:
-            raw_type = input("Please enter your transaction:")
-            s = raw_type.split(' ')
+            if self.status == 1:
+                raw_type = input("Please enter your transaction:")
+                s = raw_type.split(' ')
 
-            if s[0] == 'T' or s[0] == 't':
-                logging.debug("[TRANSFER TRANSACTION] {}".format(s))
-                transaction = {'Type': 'CLIENT_MESSAGE', 'Transaction': 'T', 'S': s[1], 'R': s[2],
-                               'A': int(s[3])}
+                if s[0] == 'T' or s[0] == 't':
+                    logging.debug("[TRANSFER TRANSACTION] {}".format(s))
+                    transaction = {'Type': 'CLIENT_MESSAGE', 'Transaction': 'T', 'S': s[1], 'R': s[2],
+                                   'A': int(s[3])}
 
-            elif s[0] == 'B' or s[0] == 'b':
-                transaction = {'Type': 'CLIENT_MESSAGE', 'Transaction': 'B', 'Client': self.clientID}
+                elif s[0] == 'B' or s[0] == 'b':
+                    transaction = {'Type': 'CLIENT_MESSAGE', 'Transaction': 'B', 'Client': self.clientID}
 
-            else:
-                print("Incorrect Transaction")
+                else:
+                    print("Incorrect Transaction")
 
-            message = pickle.dumps(transaction)
-            self.client_socket.sendall(bytes(message))
+                message = pickle.dumps(transaction)
+                self.client_socket.sendall(bytes(message))
+                self.status = 0
 
     def listenTransactions(self):
         while True:
-            msg = self.client_socket.recv(1024)
-            x = pickle.loads(msg)
-            print(x)
+            msg = self.client_socket.recv(1024).decode(FORMAT)
+            if msg:
+                self.status = 1
+                print(msg)
 
 
 if __name__ == '__main__':

@@ -6,17 +6,20 @@ import sys
 import time
 import datetime
 import hashlib
-from configparser import ConfigParser
+import json
 
 # macros
-CONFIG_FILE = 'config.ini'
+CONFIG_FILE = 'config.json'
 SERVER = socket.gethostbyname(socket.gethostname())
+FORMAT = 'utf-8'
+INSUFFICIENT_FUNDS = 'INSUFFICIENT FUNDS'
+SUCCESS = 'TRANSFER SUCCESSFUL'
 
 
 class Node:
     def __init__(self, term):
         self.term = term
-        self.prevhash = ''
+        self.prevhash = 'NULL'
         self.nonce = 0
         self.tx = ['NULL', 'NULL', 'NULL']
         self.numTx = 0
@@ -43,7 +46,6 @@ class Node:
             tx_string += i
         hash_string = tx_string + str(nonce)
         phash = hashlib.sha256(hash_string.encode()).hexdigest()
-        print(phash)
         if (phash[-1] == '0') or (phash[-1] == '1') or (phash[-1] == '2'):
             self.prevhash = phash
             return 1
@@ -73,15 +75,44 @@ class Server:
         self.server_socket.bind(ADDRESS)
         self.server_socket.listen()
         self.servers = []
+        self.config = {}
         self.message_sockets = {}
 
-        self.config = ConfigParser(allow_no_value=True)
-        self.config.read('config.ini')
-        self.servers = self.config.get('main', 'Servers').split('\n')
-        self.servers = [int(x) for x in self.servers]
-        for i in self.servers:
-            if i == port:
-                self.servers.remove(i)
+        self.leader = None
+        self.current_node = None
+        self.candidateID = str(port)
+        self.timeout = 10
+        self.election_timeout = 8 + 5 * (port % 5050)
+        self.current_role = 'FOLLOWER'
+        self.heartbeat_received = 0
+        self.transactions_log = []
+        self.blockchain = Blockchain()
+        self.balance_table = {}
+        self.client_connections = {}
+
+        with open(CONFIG_FILE, 'r') as file:
+            self.config = json.load(file)
+            for i in self.config['Servers']:
+                if i != port:
+                    self.servers.append(i)
+
+            if self.config['Leader'] != '':
+                self.leader = self.config['Leader']
+
+            self.current_node = Node(self.config['Current_node']['Term'])
+            self.current_node.nonce = self.config['Current_node']['Nonce']
+            self.current_node.tx = self.config['Current_node']['Tx']
+            self.current_node.prevhash = self.config['Current_node']['Hash']
+            self.current_node.numTx = self.config['Current_node']['NumTx']
+
+            self.balance_table = self.config['Balance']
+
+            self.blockchain.index = self.config['Blockchain']['Index']
+            # self.blockchain.chain = self.config['Blockchain']['Chain']
+            self.blockchain.prevPhash = self.config['Blockchain']['Prevhash']
+
+            self.transactions_log = self.config['Transaction_log']
+            file.close()
 
         for i in self.servers:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -92,29 +123,12 @@ class Server:
             except socket.error as exc:
                 logging.debug("[EXCEPTION] {}".format(exc))
 
-        self.candidateID = str(port)
-        self.leader = None
-        if self.config.get('main', 'Leader'):
-            self.leader = self.config.get('main', 'Leader')
-        self.timeout = 10
-        self.election_timeout = 8 + 5 * (port % 5050)
-        self.current_role = 'FOLLOWER'
-        self.heartbeat_received = 0
-        if self.leader is None:
-            self.current_phase = 0
-            self.current_term = 0
-            self.vote_casted = 0
-            self.phase1_votes = 0
-            self.phase2_votes = 0
-
-        self.current_node = None
-        if self.config.get('blockchain', 'current_node'):
-            self.current_node = self.config.get('blockchain', 'current_node')
-        self.transactions_log = []
-        self.blockchain = Blockchain()
-        self.balance_table = dict(self.config.items('balance'))
-        for i in self.balance_table.keys():
-            self.balance_table[i] = int(self.balance_table[i])
+        # if self.leader is None:
+        self.current_phase = 0
+        self.current_term = 0
+        self.vote_casted = 0
+        self.phase1_votes = 0
+        self.phase2_votes = 0
 
     def startNetwork(self):
         if self.leader is None:
@@ -145,15 +159,27 @@ class Server:
             sock.sendall(bytes(message))
 
     def updateBlockchain(self, transaction):
-        if self.current_node is None:
-            self.current_node = Node(self.current_term)
-        if self.current_node.addTx(transaction['S'] + ' ' + transaction['R'] + ' ' + str(transaction['A'])):
+        new_node = self.current_node.addTx(transaction['S'] + ' ' + transaction['R'] + ' ' + str(transaction['A']))
+        self.updateBalanceTable(transaction['S'], transaction['R'], transaction['A'])
+        if new_node:
             self.blockchain.addBlock(self.current_node)
-            self.updateBalanceTable(transaction['S'], transaction['R'], transaction['A'])
             self.current_node = Node(self.current_term)
-            if self.leader == self.candidateID:
-                # TODO write to configuration file: balance, blockchain and previous node
-                pass
+
+        if self.leader == self.candidateID:
+            with open(CONFIG_FILE, 'w') as file:
+                self.config['Balance'] = self.balance_table
+                self.config['Transaction_log'] = self.transactions_log
+                self.config['Current_node']['Term'] = self.current_node.term
+                self.config['Current_node']['Nonce'] = self.current_node.nonce
+                self.config['Current_node']['Tx'] = self.current_node.tx
+                self.config['Current_node']['Hash'] = self.current_node.prevhash
+                self.config['Current_node']['NumTx'] = self.current_node.numTx
+                if new_node:
+                    self.config['Blockchain']['Index'] = self.blockchain.index
+                    # self.config['Blockchain']['Chain'] = self.blockchain.chain
+                    self.config['Blockchain']['Prevhash'] = self.blockchain.prevPhash
+                json.dump(self.config, file)
+                file.close()
 
     def updateBalanceTable(self, sender, receiver, amount):
         self.balance_table[sender] -= amount
@@ -161,7 +187,7 @@ class Server:
 
     def sendHeartbeat(self):
         while self.leader == self.candidateID:
-            time.sleep(self.timeout - 1)
+            time.sleep(self.timeout)
             send_heartbeat = {'Type': 'HEARTBEAT', 'LeaderID': self.candidateID, 'Term': self.current_term}
             message = pickle.dumps(send_heartbeat)
             for sock in self.message_sockets.values():
@@ -195,6 +221,10 @@ class Server:
                         self.phase1_votes = 0
                         self.current_role = 'LEADER'
                         self.leader = self.candidateID
+                        with open(CONFIG_FILE, 'w') as file:
+                            self.config['Leader'] = self.candidateID
+                            json.dump(self.config, file)
+                            file.close()
                         send_heartbeat = threading.Thread(target=self.sendHeartbeat)
                         send_heartbeat.start()
                         new_leader = {'Type': 'NEW_LEADER', 'LeaderID': self.candidateID, 'Term': self.current_term}
@@ -211,19 +241,21 @@ class Server:
                 if self.leader == self.candidateID:
                     if x['Transaction'] == 'T':
                         if self.balance_table[x['S']] >= x['A']:
-                            print("messade valid from client")
                             new_transaction = {'S': x['S'], 'R': x['R'], 'A': x['A']}
                             self.transactions_log.append(new_transaction)
-                            print("appended message")
                             add_transaction = {'Type': 'ADD_TRANSACTION', 'LeaderID': self.candidateID,
                                                'Term': self.current_term, 'Transaction': new_transaction}
                             message = pickle.dumps(add_transaction)
                             for sock in self.message_sockets.values():
                                 sock.sendall(bytes(message))
-                                print("sent")
+
+                            connection.send(SUCCESS.encode(FORMAT))
+                            with open(CONFIG_FILE, 'w') as file:
+                                self.config['Transaction_log'] = self.transactions_log
+                                json.dump(self.config, file)
+                                file.close()
                         else:
-                            # TODO Tell client insufficient funds
-                            pass
+                            connection.send(INSUFFICIENT_FUNDS.encode(FORMAT))
                     elif x['Transaction'] == 'B':
                         message = self.balance_table[x['Client']]
                         connection.sendall(bytes(message))

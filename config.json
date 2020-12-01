@@ -1,0 +1,1 @@
+{"Servers": [5051, 5052, 5053], "Leader": "5051", "Current_node": {"Term": 0, "Hash": "NULL", "Nonce": 0, "NumTx": 0, "Tx": ["NULL", "NULL", "NULL"]}, "Balance": {"A": 100, "B": 100, "C": 100}, "Blockchain": {"Index": 0, "Chain": [], "Prevhash": "NULL"}, "State_variables": {"Current_phase": 0, "Current_term": 0}, "Transaction_log": []}
