@@ -14,6 +14,7 @@ SERVER = socket.gethostbyname(socket.gethostname())
 FORMAT = 'utf-8'
 INSUFFICIENT_FUNDS = 'INSUFFICIENT FUNDS'
 SUCCESS = 'TRANSFER SUCCESSFUL'
+CLIENTS = {'A': 6000, 'B': 6001, 'C': 6002}
 
 
 class Node:
@@ -109,6 +110,7 @@ class Server:
             self.balance_table = self.config['Balance']
 
             self.blockchain.index = self.config['Blockchain']['Index']
+            # TODO Read block chain data from config file and create array of Nodes
             # self.blockchain.chain = self.config['Blockchain']['Chain']
             self.blockchain.prevPhash = self.config['Blockchain']['Prevhash']
 
@@ -135,6 +137,7 @@ class Server:
         if self.leader is None:
             raft_thread = threading.Thread(target=self.beginRAFT)
             raft_thread.start()
+
         # TODO if failure occurs then check if the leader is operational
         while True:
             connection, address = self.server_socket.accept()
@@ -173,11 +176,13 @@ class Server:
                     self.current_node = Node(self.current_term)
 
             if (len(self.transactions_log) == 0) and (self.current_node.numTx > 0):
+                print(self.current_node.nonce)
                 if self.current_node.checkNonce():
                     add_transaction = {'Type': 'ADD_TRANSACTION', 'LeaderID': self.candidateID,
                                        'Term': self.current_term, 'Node': self.current_node}
                     message = pickle.dumps(add_transaction)
                     self.phase2_votes = 1
+
                     for sock in self.message_sockets.values():
                         sock.sendall(bytes(message))
 
@@ -190,19 +195,23 @@ class Server:
                             self.config['Current_node']['Tx'] = self.current_node.tx
                             self.config['Current_node']['Hash'] = self.current_node.prevhash
                             self.config['Current_node']['NumTx'] = self.current_node.numTx
-                            if new_node:
-                                self.config['Blockchain']['Index'] = self.blockchain.index
-                                print(str(self.blockchain.chain))
-                                # self.config['Blockchain']['Chain'] = self.blockchain.chain
-                                self.config['Blockchain']['Prevhash'] = self.blockchain.prevPhash
                             json.dump(self.config, file)
                             file.close()
+
+                    self.current_node = Node(self.current_term)
 
     def updateBalanceTable(self, block):
         for i in range(block.numTx):
             x = block.tx[i].split(' ')
             self.balance_table[x[0]] -= int(x[2])
             self.balance_table[x[1]] += int(x[2])
+
+            # TODO inform client about successful transaction
+            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client_socket.connect((SERVER, CLIENTS[x[0]]))
+
+            client_socket.send(SUCCESS.encode(FORMAT))
+            client_socket.close()
 
     def sendHeartbeat(self):
         while self.leader == self.candidateID:
@@ -264,13 +273,7 @@ class Server:
                         if self.balance_table[x['S']] >= x['A']:
                             new_transaction = {'S': x['S'], 'R': x['R'], 'A': x['A']}
                             self.transactions_log.append(new_transaction)
-                            '''add_transaction = {'Type': 'ADD_TRANSACTION', 'LeaderID': self.candidateID,
-                                               'Term': self.current_term, 'Transaction': new_transaction}
-                            message = pickle.dumps(add_transaction)
-                            for sock in self.message_sockets.values():
-                                sock.sendall(bytes(message))
 
-                            connection.send(SUCCESS.encode(FORMAT))'''
                             with open(CONFIG_FILE, 'w') as file:
                                 self.config['Transaction_log'] = self.transactions_log
                                 json.dump(self.config, file)
@@ -280,6 +283,10 @@ class Server:
                     elif x['Transaction'] == 'B':
                         message = str(self.balance_table[x['Client']])
                         connection.send(message.encode(FORMAT))
+                else:
+                    # TODO check if msgs are forwarded to the leader
+                    message = pickle.dumps(x)
+                    self.message_sockets[self.leader].sendall(bytes(message))
 
             elif x['Type'] == 'ADD_TRANSACTION':
                 if x['Term'] == self.current_term:
@@ -294,23 +301,26 @@ class Server:
                     self.phase2_votes += 1
                     if self.phase2_votes == 2:
                         self.phase2_votes = 0
-                        self.blockchain.addBlock(self.current_node)
-                        self.updateBalanceTable(self.current_node)
+                        self.blockchain.addBlock(x['Node'])
+                        self.updateBalanceTable(x['Node'])
                         print(self.balance_table)
                         commit_transaction = {'Type': 'COMMIT_TRANSACTION', 'ID': self.candidateID,
                                               'Term': self.current_term, 'Node': x['Node']}
-                        self.current_node = Node(self.current_term)
                         message = pickle.dumps(commit_transaction)
                         for sock in self.message_sockets.values():
                             sock.sendall(bytes(message))
+
+                        with open(CONFIG_FILE, 'w') as file:
+                            self.config['Blockchain']['Index'] = self.blockchain.index
+                            # TODO add block chain data to config file
+                            # self.config['Blockchain']['Chain'] = self.blockchain.chain
+                            self.config['Blockchain']['Prevhash'] = self.blockchain.prevPhash
 
             elif x['Type'] == 'COMMIT_TRANSACTION':
                 if x['Term'] == self.current_term:
                     self.blockchain.addBlock(self.current_node)
                     self.updateBalanceTable(self.current_node)
                     print(self.balance_table)
-                    # self.transactions_log.remove(x['Transaction'])
-                    # self.updateBlockchain(x['Transaction'])
 
             elif x['Type'] == 'HEARTBEAT':
                 heartbeat_time = datetime.datetime.now()
