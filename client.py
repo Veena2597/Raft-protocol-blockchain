@@ -5,7 +5,6 @@ import pickle
 import sys
 import json
 import time
-import datetime
 
 # macros
 CONFIG_FILE = 'config.json'
@@ -27,6 +26,7 @@ class Client:
         self.server_socket.bind(ADDRESS)
         self.server_socket.listen()
 
+        self.status = 1
         input_transactions = threading.Thread(target=self.inputTransactions)
         input_transactions.start()
         while True:
@@ -50,24 +50,28 @@ class Client:
     def inputTransactions(self):
         if self.checkLeader():
             while True:
-                raw_type = input("Please enter your transaction:")
-                s = raw_type.split(' ')
+                if self.status == 1:
+                    self.status = 0
+                    raw_type = input("Please enter your transaction:")
+                    s = raw_type.split(' ')
 
-                if s[0] == 'T' or s[0] == 't':
-                    logging.debug("[TRANSFER TRANSACTION] {}".format(s))
-                    transaction = {'Type': 'CLIENT_MESSAGE', 'Transaction': 'T', 'S': s[1], 'R': s[2],
-                                   'A': int(s[3])}
-                    message = pickle.dumps(transaction)
-                    self.client_socket.sendall(bytes(message))
+                    if s[1] == self.clientID:
+                        if s[0] == 'T' or s[0] == 't':
+                            logging.debug("[TRANSFER TRANSACTION] {}".format(s))
+                            transaction = {'Type': 'CLIENT_MESSAGE', 'Transaction': 'T', 'S': s[1], 'R': s[2],
+                                           'A': int(s[3])}
+                            message = pickle.dumps(transaction)
+                            self.client_socket.sendall(bytes(message))
 
-                elif s[0] == 'B' or s[0] == 'b':
-                    transaction = {'Type': 'CLIENT_MESSAGE', 'Transaction': 'B', 'S': self.clientID}
-                    message = pickle.dumps(transaction)
-                    self.client_socket.sendall(bytes(message))
+                        elif s[0] == 'B' or s[0] == 'b':
+                            transaction = {'Type': 'CLIENT_MESSAGE', 'Transaction': 'B', 'S': self.clientID}
+                            message = pickle.dumps(transaction)
+                            self.client_socket.sendall(bytes(message))
 
-                else:
-                    print("Incorrect Transaction")
-                time.sleep(1)
+                        else:
+                            print("Incorrect Transaction")
+                    else:
+                        print("Incorrect Transaction")
 
     def listenTransactions(self, connection, address):
         while True:
@@ -76,6 +80,7 @@ class Client:
                 temp = self.checkLeader()
             elif msg:
                 print(msg)
+                self.status = 1
 
 
 if __name__ == '__main__':

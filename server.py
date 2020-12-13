@@ -66,6 +66,22 @@ class Blockchain:
         self.chain.append(block)
         self.index += 1
 
+    def writeChain(self):
+        write_chain = []
+        for i in range(len(self.chain)):
+            write_chain.append({'Term': self.chain[i].term, 'Phash': self.chain[i].prevhash,
+                                'Nonce': self.chain[i].nonce, 'Tx': self.chain[i].tx, 'numTx': self.chain[i].numTx})
+        return write_chain
+
+    def readChain(self, write_chain):
+        for i in range(len(write_chain)):
+            node = Node(write_chain[i]['Term'])
+            node.prevhash = write_chain[i]['Phash']
+            node.nonce = write_chain[i]['Nonce']
+            node.tx = write_chain[i]['Tx']
+            node.numTx = write_chain[i]['numTx']
+            self.chain.append(node)
+
 
 class Server:
     def __init__(self, port):
@@ -111,7 +127,7 @@ class Server:
 
             self.blockchain.index = self.config['Blockchain' + self.candidateID]['Index']
             # TODO Read block chain data from config file and create array of Nodes
-            # self.blockchain.chain = self.config['Blockchain'+str(port)]['Chain']
+            self.blockchain.readChain(self.config['Blockchain' + str(port)]['Chain'])
             self.blockchain.prevPhash = self.config['Blockchain' + self.candidateID]['Prevhash']
 
             self.transactions_log = self.config['Transaction_log']
@@ -187,9 +203,7 @@ class Server:
                     message = pickle.dumps(add_transaction)
                     self.phase2_votes = 1
 
-                    for sock in self.message_sockets.values():
-                        sock.sendall(bytes(message))
-                        time.sleep(2)
+                    self.sendServers(message)
 
                     if self.leader == self.candidateID:
                         with open(CONFIG_FILE, 'w') as file:
@@ -213,141 +227,187 @@ class Server:
                 self.balance_table[x[1]] += int(x[2])
 
                 if self.leader == self.candidateID:
-                    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    client.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    try:
-                        client.connect((SERVER, int(CLIENTS[x[0]])))
-                        client.sendall(SUCCESS.encode(FORMAT))
-                    except socket.error as exc:
-                        logging.debug("[EXCEPTION] {}".format(exc))
-                    client.close()
+                    self.sendClient(int(CLIENTS[x[0]]), SUCCESS)
+
+    def sendClient(self, id, message):
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            client.connect((SERVER, id))
+            client.sendall(message.encode(FORMAT))
+        except socket.error as exc:
+            logging.debug("[EXCEPTION] {}".format(exc))
+        client.close()
+
+    def sendServers(self, message):
+        remove_port = self.message_sockets
+        for port in list(self.message_sockets):
+            try:
+                self.message_sockets[port].sendall(bytes(message))
+            except socket.error as exc:
+                logging.debug("[EXCEPTION] {}".format(exc))
+                self.message_sockets[port].close()
+                try:
+                    del self.message_sockets[port]
+                except KeyError as exc:
+                    pass
+            time.sleep(2)
+        print(self.message_sockets, remove_port)
 
     def sendHeartbeat(self):
         while self.leader == self.candidateID:
             time.sleep(self.timeout)
             send_heartbeat = {'Type': 'HEARTBEAT', 'LeaderID': self.candidateID, 'Term': self.current_term}
             message = pickle.dumps(send_heartbeat)
-            for hbsock in self.hb_sockets.values():
-                hbsock.sendall(bytes(message))
+            remove_port = self.hb_sockets
+            for port in list(self.hb_sockets):
+                try:
+                    self.hb_sockets[port].sendall(bytes(message))
+                except socket.error as exc:
+                    logging.debug("[EXCEPTION] {}".format(exc))
+                    self.hb_sockets[port].close()
+                    try:
+                        del self.hb_sockets[port]
+                    except KeyError as exc:
+                        pass
 
     def listenTransaction(self, connection, address):
-        x = {}
         while True:
             try:
                 msg = connection.recv(1024)
                 if msg:
                     x = pickle.loads(msg)
                     logging.debug("[MESSAGE] {}".format(x))
-            except socket.error as exc:
-                logging.debug("[EXCEPTION] {}".format(exc))
 
-            if (datetime.datetime.now() > (
-                    self.heartbeat_time + datetime.timedelta(seconds=(1.5 * self.timeout)))) and (self.hbcheck == 1):
-                self.leader = None
-                self.beginRAFT()
+                    if (datetime.datetime.now() > (
+                            self.heartbeat_time + datetime.timedelta(seconds=(1.5 * self.timeout)))) and (
+                            self.hbcheck == 1):
+                        self.leader = None
+                        self.beginRAFT()
 
-            if x['Type'] == 'LEADER_ELECTION':
-                if (self.current_term <= x['Term']) and (self.vote_casted == 0):
-                    self.current_phase = 1
-                    self.current_role = 'FOLLOWER'
-                    self.current_term = x['Term']
-                    self.vote_casted = 1
-                    send_vote = {'Type': 'VOTE_RECEIVED', 'ID': self.candidateID, 'Term': x['Term']}
-                    message = pickle.dumps(send_vote)
-                    self.message_sockets[x['ID']].sendall(bytes(message))
-                    time.sleep(2)
-
-            elif x['Type'] == 'VOTE_RECEIVED':
-                if (x['Term'] == self.current_term) and (self.leader is None):
-                    self.phase1_votes += 1
-                    if self.phase1_votes == 2:
-                        self.phase1_votes = 0
-                        self.current_role = 'LEADER'
-                        self.leader = self.candidateID
-                        self.current_phase = 2
-                        with open(CONFIG_FILE, 'w') as file:
-                            self.config['Leader'] = self.candidateID
-                            json.dump(self.config, file)
-                            file.close()
-
-                        send_heartbeat = threading.Thread(target=self.sendHeartbeat)
-                        send_heartbeat.start()
-                        append_entries = threading.Thread(target=self.updateBlockchain)
-                        append_entries.start()
-                        new_leader = {'Type': 'NEW_LEADER', 'LeaderID': self.candidateID, 'Term': self.current_term}
-                        message = pickle.dumps(new_leader)
-                        for sock in self.message_sockets.values():
-                            sock.sendall(bytes(message))
+                    if x['Type'] == 'LEADER_ELECTION':
+                        if (self.current_term <= x['Term']) and (self.vote_casted == 0):
+                            self.current_phase = 1
+                            self.current_role = 'FOLLOWER'
+                            self.current_term = x['Term']
+                            self.vote_casted = 1
+                            send_vote = {'Type': 'VOTE_RECEIVED', 'ID': self.candidateID, 'Term': x['Term']}
+                            message = pickle.dumps(send_vote)
+                            try:
+                                self.message_sockets[x['ID']].sendall(bytes(message))
+                            except socket.error as exc:
+                                logging.debug("[EXCEPTION] {}".format(exc))
+                                self.message_sockets[x['ID']].close()
+                                del self.message_sockets[x['ID']]
                             time.sleep(2)
 
-            elif x['Type'] == 'NEW_LEADER':
-                self.current_term = x['Term']
-                self.leader = x['LeaderID']
-                self.current_role = 'FOLLOWER'
+                    elif x['Type'] == 'VOTE_RECEIVED':
+                        if (x['Term'] == self.current_term) and (self.leader is None):
+                            self.phase1_votes += 1
+                            if self.phase1_votes == 2:
+                                self.phase1_votes = 0
+                                self.current_role = 'LEADER'
+                                self.leader = self.candidateID
+                                self.current_phase = 2
+                                with open(CONFIG_FILE, 'w') as file:
+                                    self.config['Leader'] = self.candidateID
+                                    self.config['State_variables']['Current_phase'] = self.current_phase
+                                    self.config['State_variables']['Current_term'] = self.current_term
+                                    json.dump(self.config, file)
+                                    file.close()
 
-            elif x['Type'] == 'CLIENT_MESSAGE':
-                if self.leader == self.candidateID:
-                    if x['Transaction'] == 'T':
-                        if self.balance_table[x['S']] >= x['A']:
-                            new_transaction = {'Type': 'T', 'S': x['S'], 'R': x['R'], 'A': x['A']}
-                            self.transactions_log.append(new_transaction)
+                                send_heartbeat = threading.Thread(target=self.sendHeartbeat)
+                                send_heartbeat.start()
+                                append_entries = threading.Thread(target=self.updateBlockchain)
+                                append_entries.start()
+                                new_leader = {'Type': 'NEW_LEADER', 'LeaderID': self.candidateID,
+                                              'Term': self.current_term}
+                                message = pickle.dumps(new_leader)
+                                self.sendServers(message)
+
+                    elif x['Type'] == 'NEW_LEADER':
+                        self.current_term = x['Term']
+                        self.leader = x['LeaderID']
+                        self.current_role = 'FOLLOWER'
+
+                    elif x['Type'] == 'CLIENT_MESSAGE':
+                        if self.leader == self.candidateID:
+                            if x['Transaction'] == 'T':
+                                if self.balance_table[x['S']] >= x['A']:
+                                    new_transaction = {'Type': 'T', 'S': x['S'], 'R': x['R'], 'A': x['A']}
+                                    self.transactions_log.append(new_transaction)
+                                    with open(CONFIG_FILE, 'w') as file:
+                                        self.config['Transaction_log'] = self.transactions_log
+                                        json.dump(self.config, file)
+                                        file.close()
+                                else:
+                                    self.sendClient(int(CLIENTS[x['S']]), INSUFFICIENT_FUNDS)
+                            elif x['Transaction'] == 'B':
+                                new_transaction = {'Type': 'B', 'S': x['S']}
+                                self.transactions_log.append(new_transaction)
+                                message = self.balance_table[x['S']]
+                                print(message)
+                                self.sendClient(int(CLIENTS[x['S']]), str(message))
+                        elif (self.leader != self.candidateID) and (self.leader is not None):
+                            message = pickle.dumps(x)
+                            self.message_sockets[self.leader].sendall(bytes(message))
+                            self.sendClient(int(CLIENTS[x['S']]), LEADER_CHANGE)
+                            time.sleep(2)
+
+                    elif x['Type'] == 'ADD_TRANSACTION':
+                        if x['Term'] == self.current_term:
+                            self.current_node = x['Node']
+                            added_transaction = {'Type': 'ADDED_TRANSACTION', 'ID': self.candidateID,
+                                                 'Term': self.current_term, 'Node': x['Node']}
+                            message = pickle.dumps(added_transaction)
+                            try:
+                                self.message_sockets[self.leader].sendall(bytes(message))
+                            except socket.error as exc:
+                                logging.debug("[EXCEPTION] {}".format(exc))
+                                del self.message_sockets[self.leader]
+
+                            time.sleep(2)
+
+                    elif x['Type'] == 'ADDED_TRANSACTION':
+                        if x['Term'] == self.current_term:
+                            self.phase2_votes += 1
+                            if self.phase2_votes == 2:
+                                self.phase2_votes = 0
+                                self.blockchain.addBlock(x['Node'])
+                                self.updateBalanceTable(x['Node'])
+                                print(self.balance_table)
+                                commit_transaction = {'Type': 'COMMIT_TRANSACTION', 'ID': self.candidateID,
+                                                      'Term': self.current_term, 'Node': x['Node']}
+                                message = pickle.dumps(commit_transaction)
+                                self.sendServers(message)
+
+                                with open(CONFIG_FILE, 'w') as file:
+                                    self.config['Blockchain' + self.candidateID]['Index'] = self.blockchain.index
+                                    self.config['Blockchain' + self.candidateID]['Chain'] = self.blockchain.writeChain()
+                                    self.config['Blockchain' + self.candidateID]['Prevhash'] = self.blockchain.prevPhash
+                                    json.dump(self.config, file)
+                                    file.close()
+
+                    elif x['Type'] == 'COMMIT_TRANSACTION':
+                        if x['Term'] == self.current_term:
+                            self.blockchain.addBlock(x['Node'])
+                            self.updateBalanceTable(x['Node'])
                             with open(CONFIG_FILE, 'w') as file:
-                                self.config['Transaction_log'] = self.transactions_log
+                                # check
+                                print('Blockchain' + self.candidateID)
+                                self.config['Blockchain' + self.candidateID]['Index'] = self.blockchain.index
+                                self.config['Blockchain' + self.candidateID]['Chain'] = self.blockchain.writeChain()
+                                self.config['Blockchain' + self.candidateID]['Prevhash'] = self.blockchain.prevPhash
                                 json.dump(self.config, file)
                                 file.close()
-                        else:
-                            connection.send(INSUFFICIENT_FUNDS.encode(FORMAT))
-                    elif x['Transaction'] == 'B':
-                        new_transaction = {'Type': 'B', 'S': x['S']}
-                        self.transactions_log.append(new_transaction)
-                        message = str(self.balance_table[x['S']])
-                        connection.send(message.encode(FORMAT))
-                elif (self.leader != self.candidateID) and (self.leader is not None):
-                    message = pickle.dumps(x)
-                    self.message_sockets[self.leader].sendall(bytes(message))
-                    connection.send(LEADER_CHANGE.encode(FORMAT))
-                    time.sleep(2)
+                            print(self.balance_table)
 
-            elif x['Type'] == 'ADD_TRANSACTION':
-                if x['Term'] == self.current_term:
-                    self.current_node = x['Node']
-                    added_transaction = {'Type': 'ADDED_TRANSACTION', 'ID': self.candidateID,
-                                         'Term': self.current_term, 'Node': x['Node']}
-                    message = pickle.dumps(added_transaction)
-                    self.message_sockets[self.leader].sendall(bytes(message))
-                    time.sleep(2)
+                    elif x['Type'] == 'HEARTBEAT':
+                        self.heartbeat_time = datetime.datetime.now()
+                        self.hbcheck = 1
 
-            elif x['Type'] == 'ADDED_TRANSACTION':
-                if x['Term'] == self.current_term:
-                    self.phase2_votes += 1
-                    if self.phase2_votes == 2:
-                        self.phase2_votes = 0
-                        self.blockchain.addBlock(x['Node'])
-                        self.updateBalanceTable(x['Node'])
-                        print(self.balance_table)
-                        commit_transaction = {'Type': 'COMMIT_TRANSACTION', 'ID': self.candidateID,
-                                              'Term': self.current_term, 'Node': x['Node']}
-                        message = pickle.dumps(commit_transaction)
-                        for sock in self.message_sockets.values():
-                            sock.sendall(bytes(message))
-                            time.sleep(2)
-
-                        with open(CONFIG_FILE, 'w') as file:
-                            self.config['Blockchain' + self.candidateID]['Index'] = self.blockchain.index
-                            # TODO add block chain data to config file
-                            # self.config['Blockchain'+self.candidateID]['Chain'].append(x['Node'])
-                            self.config['Blockchain' + self.candidateID]['Prevhash'] = self.blockchain.prevPhash
-                            file.close()
-
-            elif x['Type'] == 'COMMIT_TRANSACTION':
-                if x['Term'] == self.current_term:
-                    self.blockchain.addBlock(self.current_node)
-                    self.updateBalanceTable(self.current_node)
-                    print(self.balance_table)
-
-            elif x['Type'] == 'HEARTBEAT':
-                self.heartbeat_time = datetime.datetime.now()
-                self.hbcheck = 1
+            except socket.error as exc:
+                logging.debug("[EXCEPTION] {}".format(exc))
 
 
 if __name__ == '__main__':
