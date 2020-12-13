@@ -11,6 +11,7 @@ import datetime
 CONFIG_FILE = 'config.json'
 SERVER = socket.gethostbyname(socket.gethostname())
 FORMAT = 'utf-8'
+LEADER_CHANGE = 'LEADER_CHANGE'
 
 
 class Client:
@@ -25,7 +26,6 @@ class Client:
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind(ADDRESS)
         self.server_socket.listen()
-        self.status = 1
 
         input_transactions = threading.Thread(target=self.inputTransactions)
         input_transactions.start()
@@ -45,7 +45,7 @@ class Client:
                     self.client_socket.connect((SERVER, self.leader))
                     return 1
                 file.close()
-            time.sleep(3)
+            time.sleep(2)
 
     def inputTransactions(self):
         if self.checkLeader():
@@ -57,22 +57,24 @@ class Client:
                     logging.debug("[TRANSFER TRANSACTION] {}".format(s))
                     transaction = {'Type': 'CLIENT_MESSAGE', 'Transaction': 'T', 'S': s[1], 'R': s[2],
                                    'A': int(s[3])}
+                    message = pickle.dumps(transaction)
+                    self.client_socket.sendall(bytes(message))
 
                 elif s[0] == 'B' or s[0] == 'b':
                     transaction = {'Type': 'CLIENT_MESSAGE', 'Transaction': 'B', 'S': self.clientID}
+                    message = pickle.dumps(transaction)
+                    self.client_socket.sendall(bytes(message))
 
                 else:
                     print("Incorrect Transaction")
-
-                message = pickle.dumps(transaction)
-                # TODO check who is the leader
-                self.client_socket.sendall(bytes(message))
-                self.status = 0
+                time.sleep(1)
 
     def listenTransactions(self, connection, address):
         while True:
             msg = connection.recv(1024).decode(FORMAT)
-            if msg:
+            if msg == LEADER_CHANGE:
+                temp = self.checkLeader()
+            elif msg:
                 print(msg)
 
 

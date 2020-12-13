@@ -15,6 +15,7 @@ FORMAT = 'utf-8'
 INSUFFICIENT_FUNDS = 'INSUFFICIENT FUNDS'
 SUCCESS = 'TRANSFER SUCCESSFUL'
 CLIENTS = {'A': '6000', 'B': '6001', 'C': '6002'}
+LEADER_CHANGE = 'LEADER_CHANGE'
 
 
 class Node:
@@ -66,27 +67,6 @@ class Blockchain:
         self.index += 1
 
 
-class HeartBeat:
-    def __init__(self):
-        self.message_sockets = {}
-
-    def startHeartbeat(self, servers):
-        for i in servers:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                sock.connect((SERVER, i))
-                self.message_sockets[str(i)] = sock
-            except socket.error as exc:
-                logging.debug("[EXCEPTION] {}".format(exc))
-
-    def sendHeartbeat(self, candidateID, current_term):
-        send_heartbeat = {'Type': 'HEARTBEAT', 'LeaderID': candidateID, 'Term': current_term}
-        message = pickle.dumps(send_heartbeat)
-        for sock in self.message_sockets.values():
-            sock.sendall(bytes(message))
-
-
 class Server:
     def __init__(self, port):
         ADDRESS = (SERVER, port)
@@ -97,7 +77,9 @@ class Server:
         self.servers = []
         self.config = {}
         self.message_sockets = {}
-        self.heartbeat = HeartBeat()
+        self.hb_sockets = {}
+        self.hbcheck = 0
+        self.heartbeat_time = datetime.datetime.now()
 
         self.leader = None
         self.current_node = None
@@ -105,7 +87,6 @@ class Server:
         self.timeout = 10
         self.election_timeout = 8 + 5 * (port % 5050)
         self.current_role = 'FOLLOWER'
-        self.heartbeat_received = 0
         self.transactions_log = []
         self.blockchain = Blockchain()
         self.balance_table = {}
@@ -128,10 +109,10 @@ class Server:
 
             self.balance_table = self.config['Balance']
 
-            self.blockchain.index = self.config['Blockchain']['Index']
+            self.blockchain.index = self.config['Blockchain' + self.candidateID]['Index']
             # TODO Read block chain data from config file and create array of Nodes
             # self.blockchain.chain = self.config['Blockchain'+str(port)]['Chain']
-            self.blockchain.prevPhash = self.config['Blockchain']['Prevhash']
+            self.blockchain.prevPhash = self.config['Blockchain' + self.candidateID]['Prevhash']
 
             self.transactions_log = self.config['Transaction_log']
             file.close()
@@ -139,9 +120,13 @@ class Server:
         for i in self.servers:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            hbsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            hbsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
-                sock.connect((SERVER, i))
+                sock.connect_ex((SERVER, i))
                 self.message_sockets[str(i)] = sock
+                hbsock.connect_ex((SERVER, i))
+                self.hb_sockets[str(i)] = hbsock
             except socket.error as exc:
                 logging.debug("[EXCEPTION] {}".format(exc))
 
@@ -156,7 +141,6 @@ class Server:
             raft_thread = threading.Thread(target=self.beginRAFT)
             raft_thread.start()
 
-        # TODO if failure occurs then check if the leader is operational
         while True:
             connection, address = self.server_socket.accept()
             logging.debug("[CLIENT CONNECTED] {}".format(str(connection)))
@@ -184,6 +168,7 @@ class Server:
     def updateBlockchain(self):
         while True:
             if len(self.transactions_log) > 0:
+                print(self.transactions_log)
                 if self.current_node.numTx < 2:
                     if self.transactions_log[0]['Type'] == 'T':
                         self.current_node.addTx(self.transactions_log[0]['S'] + ' ' +
@@ -240,18 +225,25 @@ class Server:
     def sendHeartbeat(self):
         while self.leader == self.candidateID:
             time.sleep(self.timeout)
-            self.heartbeat.sendHeartbeat(self.candidateID, self.current_term)
+            send_heartbeat = {'Type': 'HEARTBEAT', 'LeaderID': self.candidateID, 'Term': self.current_term}
+            message = pickle.dumps(send_heartbeat)
+            for hbsock in self.hb_sockets.values():
+                hbsock.sendall(bytes(message))
 
     def listenTransaction(self, connection, address):
-        heartbeat_time = datetime.datetime.now()
+        x = {}
         while True:
-            msg = connection.recv(1024)
-            x = pickle.loads(msg)
-            logging.debug("[MESSAGE] {}".format(x))
+            try:
+                msg = connection.recv(1024)
+                if msg:
+                    x = pickle.loads(msg)
+                    logging.debug("[MESSAGE] {}".format(x))
+            except socket.error as exc:
+                logging.debug("[EXCEPTION] {}".format(exc))
 
-            if (datetime.datetime.now() > (heartbeat_time + datetime.timedelta(seconds=(1.5 * self.timeout)))) and (self.current_phase > 1):
+            if (datetime.datetime.now() > (
+                    self.heartbeat_time + datetime.timedelta(seconds=(1.5 * self.timeout)))) and (self.hbcheck == 1):
                 self.leader = None
-                self.heartbeat_received = 0
                 self.beginRAFT()
 
             if x['Type'] == 'LEADER_ELECTION':
@@ -278,7 +270,6 @@ class Server:
                             json.dump(self.config, file)
                             file.close()
 
-                        self.heartbeat.startHeartbeat(self.servers)
                         send_heartbeat = threading.Thread(target=self.sendHeartbeat)
                         send_heartbeat.start()
                         append_entries = threading.Thread(target=self.updateBlockchain)
@@ -300,7 +291,6 @@ class Server:
                         if self.balance_table[x['S']] >= x['A']:
                             new_transaction = {'Type': 'T', 'S': x['S'], 'R': x['R'], 'A': x['A']}
                             self.transactions_log.append(new_transaction)
-
                             with open(CONFIG_FILE, 'w') as file:
                                 self.config['Transaction_log'] = self.transactions_log
                                 json.dump(self.config, file)
@@ -310,12 +300,12 @@ class Server:
                     elif x['Transaction'] == 'B':
                         new_transaction = {'Type': 'B', 'S': x['S']}
                         self.transactions_log.append(new_transaction)
-                        message = str(self.balance_table[x['Client']])
+                        message = str(self.balance_table[x['S']])
                         connection.send(message.encode(FORMAT))
                 elif (self.leader != self.candidateID) and (self.leader is not None):
                     message = pickle.dumps(x)
                     self.message_sockets[self.leader].sendall(bytes(message))
-                    # TODO inform client about leader change
+                    connection.send(LEADER_CHANGE.encode(FORMAT))
                     time.sleep(2)
 
             elif x['Type'] == 'ADD_TRANSACTION':
@@ -343,10 +333,11 @@ class Server:
                             time.sleep(2)
 
                         with open(CONFIG_FILE, 'w') as file:
-                            self.config['Blockchain']['Index'] = self.blockchain.index
+                            self.config['Blockchain' + self.candidateID]['Index'] = self.blockchain.index
                             # TODO add block chain data to config file
-                            # self.config['Blockchain']['Chain'] = self.blockchain.chain
-                            self.config['Blockchain']['Prevhash'] = self.blockchain.prevPhash
+                            # self.config['Blockchain'+self.candidateID]['Chain'].append(x['Node'])
+                            self.config['Blockchain' + self.candidateID]['Prevhash'] = self.blockchain.prevPhash
+                            file.close()
 
             elif x['Type'] == 'COMMIT_TRANSACTION':
                 if x['Term'] == self.current_term:
@@ -355,8 +346,8 @@ class Server:
                     print(self.balance_table)
 
             elif x['Type'] == 'HEARTBEAT':
-                heartbeat_time = datetime.datetime.now()
-                self.heartbeat_received = 1
+                self.heartbeat_time = datetime.datetime.now()
+                self.hbcheck = 1
 
 
 if __name__ == '__main__':
