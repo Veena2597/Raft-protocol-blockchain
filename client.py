@@ -69,8 +69,8 @@ class Client:
                         while self.status == 0:
                             time.sleep(1)
                             i = i + 1
-                            if i == 5:
-                                i=0
+                            if i == 6:
+                                i = 0
                                 print("TIMEOUT! Trying again")
                                 self.sendServer(message)
 
@@ -101,7 +101,6 @@ class Client:
         while True:
             msg = connection.recv(1024).decode(FORMAT)
             if 'NEW_LEADER' in msg:
-                #print(msg.split(' ')[1])
                 self.leader = msg.split(' ')[1]
             elif msg:
                 print(msg)

@@ -179,7 +179,6 @@ class Server:
             message = pickle.dumps({'Type': 'RECOVERY', 'ID': self.candidateID, 'Term': self.current_term})
             self.sendServers(message)
 
-
         self.vote_casted = 0
         self.phase1_votes = 0
         self.phase2_votes = 0
@@ -216,7 +215,7 @@ class Server:
     def updateBlockchain(self):
         while True:
             if len(self.transactions_log) > 0:
-                print(self.transactions_log)
+                # print(self.transactions_log)
                 if self.current_node.numTx < 2:
                     if self.transactions_log[0]['Type'] == 'T':
                         self.current_node.addTx(self.transactions_log[0]['S'] + ' ' +
@@ -284,7 +283,7 @@ class Server:
                         del self.message_sockets[port]
                     except KeyError as exc:
                         pass
-            time.sleep(2)
+                time.sleep(2)
 
     def sendHeartbeat(self):
         for i in self.servers:
@@ -311,7 +310,7 @@ class Server:
                             del self.hb_sockets[port]
                         except KeyError as exc:
                             pass
-            time.sleep(self.timeout)
+                time.sleep(self.timeout)
 
     def recovery(self, id):
         hbsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -337,7 +336,7 @@ class Server:
                         temp = json.load(file)
                         self.leader_raddr = temp['raddr'][self.candidateID]
                         file.close()
-                    print(self.leader_raddr[1], address[1])
+                    # print(self.leader_raddr[1], address[1])
                     if self.leader_raddr[1] == address[1]:
                         try:
                             message = {'Type': 'HEARTBEAT'}
