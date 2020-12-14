@@ -39,25 +39,15 @@ class Client:
             listen_transactions = threading.Thread(target=self.listenTransactions, args=(connection, address))
             listen_transactions.start()
 
-    def checkLeader(self):
-        while True:
-            with open(CONFIG_FILE, 'r') as file:
-                config = json.load(file)
-                if config['Leader'] != '':
-                    self.leader = int(config['Leader'])
-                    print(self.leader)
-                    try:
-                        self.client_socket.connect((SERVER, self.leader))
-                    except Exception as exc:
-                        self.client_socket.close()
-                file.close()
-
-    def checkTimeout(self, timeout):
-        while self.status != 1:
-            if datetime.datetime.now() > (timeout + datetime.timedelta(seconds=(10))):
-                print("TIMEOUT! PLEASE TRY AGAIN")
-                #self.checkLeader()
-                self.status = 1
+    def sendServer(self, message):
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            client.connect((SERVER, int(self.leader)))
+            client.sendall(bytes(message))
+        except socket.error as exc:
+            logging.debug("[EXCEPTION] {}".format(exc))
+        client.close()
 
     def inputTransactions(self):
         while True:
@@ -72,24 +62,34 @@ class Client:
                         transaction = {'Type': 'CLIENT_MESSAGE', 'Transaction': 'T', 'S': s[1], 'R': s[2],
                                        'A': int(s[3])}
                         message = pickle.dumps(transaction)
+
                         try:
-                            self.client_socket.sendall(bytes(message))
+                            self.sendServer(message)
                         except socket.error as exc:
                             logging.debug("[EXCEPTION] {}".format(exc))
-                            self.client_socket.close()
-                            self.checkLeader()
-                        self.checkTimeout(datetime.datetime.now())
+                        i = 0
+                        while self.status == 0:
+                            time.sleep(1)
+                            i = i + 1
+                            if i == 8:
+                                self.sendServer(message)
 
                     elif s[0] == 'B' or s[0] == 'b':
                         transaction = {'Type': 'CLIENT_MESSAGE', 'Transaction': 'B', 'S': self.clientID}
+                        logging.debug("[TRANSFER TRANSACTION] {}".format(s))
                         message = pickle.dumps(transaction)
+
                         try:
-                            self.client_socket.sendall(bytes(message))
+                            self.sendServer(message)
                         except socket.error as exc:
                             logging.debug("[EXCEPTION] {}".format(exc))
-                            self.client_socket.close()
-                            self.checkLeader()
-                        self.checkTimeout(datetime.datetime.now())
+                        i = 0
+                        while self.status == 0:
+                            time.sleep(1)
+                            i = i + 1
+                            if i == 8:
+                                self.sendServer(message)
+
                     else:
                         print("Incorrect Transaction")
                 else:
@@ -99,9 +99,10 @@ class Client:
         while True:
             msg = connection.recv(1024).decode(FORMAT)
             if msg == LEADER_CHANGE:
-                temp = self.checkLeader()
+                self.checkLeader()
             elif 'NEW_LEADER' in msg:
                 print(msg.split(' ')[1])
+                self.leader = msg.split(' ')[1]
             elif msg:
                 print(msg)
                 self.status = 1
