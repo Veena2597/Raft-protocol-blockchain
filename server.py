@@ -101,12 +101,13 @@ class Server:
         self.current_node = None
         self.candidateID = str(port)
         self.timeout = 10
-        self.election_timeout = 8 + 5 * (port % 5050)
+        self.election_timeout = 5 + 3 * (port % 5050)
         self.current_role = 'FOLLOWER'
         self.transactions_log = []
         self.blockchain = Blockchain()
         self.balance_table = {}
-        self.client_sockets = {}
+        self.raddr = {}
+        self.leader_raddr = None
 
         with open(CONFIG_FILE, 'r') as file:
             self.config = json.load(file)
@@ -136,15 +137,18 @@ class Server:
         for i in self.servers:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            hbsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            hbsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 sock.connect_ex((SERVER, i))
                 self.message_sockets[str(i)] = sock
-                hbsock.connect_ex((SERVER, i))
-                self.hb_sockets[str(i)] = hbsock
+                host, add = sock.getsockname()
+                self.raddr[str(i)] = add
             except socket.error as exc:
                 logging.debug("[EXCEPTION] {}".format(exc))
+        print(self.raddr)
+        with open(CONFIG_FILE, 'w') as file:
+            self.config['raddr'+self.candidateID] = self.raddr
+            json.dump(self.config, file)
+            file.close()
 
         self.current_phase = 0
         self.current_term = 0
@@ -159,7 +163,7 @@ class Server:
 
         while True:
             connection, address = self.server_socket.accept()
-            logging.debug("[CLIENT CONNECTED] {}".format(str(connection)))
+            logging.debug("[CLIENT CONNECTED] {} {}".format(str(connection), str(address)))
 
             listen_transactions = threading.Thread(target=self.listenTransaction, args=(connection, address))
             listen_transactions.start()
@@ -206,6 +210,9 @@ class Server:
                     self.sendServers(message)
 
                     if self.leader == self.candidateID:
+                        with open(CONFIG_FILE, 'r') as file:
+                            self.config = json.load(file)
+                            file.close()
                         with open(CONFIG_FILE, 'w') as file:
                             self.config['Balance'] = self.balance_table
                             self.config['Transaction_log'] = self.transactions_log
@@ -240,7 +247,6 @@ class Server:
         client.close()
 
     def sendServers(self, message):
-        remove_port = self.message_sockets
         for port in list(self.message_sockets):
             try:
                 self.message_sockets[port].sendall(bytes(message))
@@ -251,15 +257,22 @@ class Server:
                     del self.message_sockets[port]
                 except KeyError as exc:
                     pass
-            time.sleep(2)
-        print(self.message_sockets, remove_port)
+            time.sleep(3)
 
     def sendHeartbeat(self):
+        for i in self.servers:
+            hbsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            hbsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                hbsock.connect_ex((SERVER, i))
+                self.hb_sockets[str(i)] = hbsock
+            except socket.error as exc:
+                logging.debug("[EXCEPTION] {}".format(exc))
+
         while self.leader == self.candidateID:
             time.sleep(self.timeout)
             send_heartbeat = {'Type': 'HEARTBEAT', 'LeaderID': self.candidateID, 'Term': self.current_term}
             message = pickle.dumps(send_heartbeat)
-            remove_port = self.hb_sockets
             for port in list(self.hb_sockets):
                 try:
                     self.hb_sockets[port].sendall(bytes(message))
@@ -274,16 +287,27 @@ class Server:
     def listenTransaction(self, connection, address):
         while True:
             try:
+                if (datetime.datetime.now() > (
+                        self.heartbeat_time + datetime.timedelta(seconds=(1.5 * self.timeout)))) and (
+                        self.hbcheck == 1):
+                    # check if connection had leader_raddr
+                    try:
+                        message = {'AVAILABLE': 1}
+                        y = pickle.dumps(message)
+                        connection.sendall(bytes(message))
+                    except socket.error as exc:
+                        print(connection)
+                        print("Beginning raft")
+                        connection.close()
+                        self.leader = None
+                        self.current_phase = 0
+                        self.hbcheck = 0
+                        self.beginRAFT()
+
                 msg = connection.recv(1024)
                 if msg:
                     x = pickle.loads(msg)
                     logging.debug("[MESSAGE] {}".format(x))
-
-                    if (datetime.datetime.now() > (
-                            self.heartbeat_time + datetime.timedelta(seconds=(1.5 * self.timeout)))) and (
-                            self.hbcheck == 1):
-                        self.leader = None
-                        self.beginRAFT()
 
                     if x['Type'] == 'LEADER_ELECTION':
                         if (self.current_term <= x['Term']) and (self.vote_casted == 0):
@@ -302,6 +326,7 @@ class Server:
                             time.sleep(2)
 
                     elif x['Type'] == 'VOTE_RECEIVED':
+                        print(x['Term'], self.current_term, self.leader)
                         if (x['Term'] == self.current_term) and (self.leader is None):
                             self.phase1_votes += 1
                             if self.phase1_votes == 2:
@@ -309,6 +334,9 @@ class Server:
                                 self.current_role = 'LEADER'
                                 self.leader = self.candidateID
                                 self.current_phase = 2
+                                with open(CONFIG_FILE, 'r') as file:
+                                    self.config = json.load(file)
+                                    file.close()
                                 with open(CONFIG_FILE, 'w') as file:
                                     self.config['Leader'] = self.candidateID
                                     self.config['State_variables']['Current_phase'] = self.current_phase
@@ -324,11 +352,14 @@ class Server:
                                               'Term': self.current_term}
                                 message = pickle.dumps(new_leader)
                                 self.sendServers(message)
+                                self.sendClient(6000, 'NEW_LEADER ' + self.leader)
 
                     elif x['Type'] == 'NEW_LEADER':
                         self.current_term = x['Term']
                         self.leader = x['LeaderID']
                         self.current_role = 'FOLLOWER'
+                        self.vote_casted = 0
+                        self.leader_raddr = self.config['raddr' + self.leader][self.candidateID]
 
                     elif x['Type'] == 'CLIENT_MESSAGE':
                         if self.leader == self.candidateID:
@@ -336,6 +367,9 @@ class Server:
                                 if self.balance_table[x['S']] >= x['A']:
                                     new_transaction = {'Type': 'T', 'S': x['S'], 'R': x['R'], 'A': x['A']}
                                     self.transactions_log.append(new_transaction)
+                                    with open(CONFIG_FILE, 'r') as file:
+                                        self.config = json.load(file)
+                                        file.close()
                                     with open(CONFIG_FILE, 'w') as file:
                                         self.config['Transaction_log'] = self.transactions_log
                                         json.dump(self.config, file)
@@ -365,7 +399,6 @@ class Server:
                             except socket.error as exc:
                                 logging.debug("[EXCEPTION] {}".format(exc))
                                 del self.message_sockets[self.leader]
-
                             time.sleep(2)
 
                     elif x['Type'] == 'ADDED_TRANSACTION':
@@ -376,11 +409,9 @@ class Server:
                                 self.blockchain.addBlock(x['Node'])
                                 self.updateBalanceTable(x['Node'])
                                 print(self.balance_table)
-                                commit_transaction = {'Type': 'COMMIT_TRANSACTION', 'ID': self.candidateID,
-                                                      'Term': self.current_term, 'Node': x['Node']}
-                                message = pickle.dumps(commit_transaction)
-                                self.sendServers(message)
-
+                                with open(CONFIG_FILE, 'r') as file:
+                                    self.config = json.load(file)
+                                    file.close()
                                 with open(CONFIG_FILE, 'w') as file:
                                     self.config['Blockchain' + self.candidateID]['Index'] = self.blockchain.index
                                     self.config['Blockchain' + self.candidateID]['Chain'] = self.blockchain.writeChain()
@@ -388,10 +419,18 @@ class Server:
                                     json.dump(self.config, file)
                                     file.close()
 
+                                commit_transaction = {'Type': 'COMMIT_TRANSACTION', 'ID': self.candidateID,
+                                                      'Term': self.current_term, 'Node': x['Node']}
+                                message = pickle.dumps(commit_transaction)
+                                self.sendServers(message)
+
                     elif x['Type'] == 'COMMIT_TRANSACTION':
                         if x['Term'] == self.current_term:
                             self.blockchain.addBlock(x['Node'])
                             self.updateBalanceTable(x['Node'])
+                            with open(CONFIG_FILE, 'r') as file:
+                                self.config = json.load(file)
+                                file.close()
                             with open(CONFIG_FILE, 'w') as file:
                                 # check
                                 print('Blockchain' + self.candidateID)
