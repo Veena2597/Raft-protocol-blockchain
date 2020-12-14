@@ -1,1 +1,1 @@
-{"Servers": [5051, 5052, 5053], "Clients": [6000, 6001, 6002], "Leader": "5051", "Partition": [[1, 1, 1], [1, 1, 1], [1, 1, 1]], "State_variables": {"Current_phase": 2, "Current_term": 1}}
+{"Servers": [5051, 5052, 5053], "Clients": [6000, 6001, 6002], "Leader": "5052", "Partition": [[1, 1, 1], [1, 1, 1], [1, 1, 1]], "State_variables": {"Current_phase": 2, "Current_term": 2}}

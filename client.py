@@ -19,9 +19,6 @@ class Client:
         ADDRESS = (SERVER, port)
         self.clientID = chr(ord('A') + (port % 6000))
         self.leader = 5051  # need to retrieve from state.cfg
-        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.client_socket.connect_ex((SERVER, self.leader))
 
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -29,7 +26,7 @@ class Client:
         self.server_socket.listen()
 
         self.status = 1
-        self.response = None
+        self.server_start = 0
         input_transactions = threading.Thread(target=self.inputTransactions)
         input_transactions.start()
         while True:
@@ -50,6 +47,7 @@ class Client:
         client.close()
 
     def inputTransactions(self):
+        print("Establishing connection with Servers")
         while True:
             if self.status == 1:
                 self.status = 0
@@ -71,7 +69,9 @@ class Client:
                         while self.status == 0:
                             time.sleep(1)
                             i = i + 1
-                            if i == 8:
+                            if i == 5:
+                                i=0
+                                print("TIMEOUT! Trying again")
                                 self.sendServer(message)
 
                     elif s[0] == 'B' or s[0] == 'b':
@@ -92,21 +92,20 @@ class Client:
 
                     else:
                         print("Incorrect Transaction")
+                        self.status = 1
                 else:
                     print("Incorrect Transaction")
+                    self.status = 1
 
     def listenTransactions(self, connection, address):
         while True:
             msg = connection.recv(1024).decode(FORMAT)
-            if msg == LEADER_CHANGE:
-                self.checkLeader()
-            elif 'NEW_LEADER' in msg:
-                print(msg.split(' ')[1])
+            if 'NEW_LEADER' in msg:
+                #print(msg.split(' ')[1])
                 self.leader = msg.split(' ')[1]
             elif msg:
                 print(msg)
                 self.status = 1
-                self.response = datetime.datetime.now()
 
 
 if __name__ == '__main__':
