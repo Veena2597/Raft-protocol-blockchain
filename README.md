@@ -1,8 +1,6 @@
-# ADS_HW3
+The bank has three servers to keep track of all transactions made by clients. It uses Raft as its underlying consensus protocol to keep an updated transaction history on all of its servers to ensure proper blockchain replication, and at the same time, to ensure fault tolerance from server crash failures and the network partition failures
 
-1. Configure clients with servers - Veena
-2. Leader election - Jinesh
-3. Normal operation & balance table - Veena
-4. Append to blockchain after committing
-5. Partitioning
-6. Network
+Since Raft is a leader-based approach to consensus, we decompose this project into three parts.
+• Leader Election
+• Normal Operations
+• Fault Tolerance
