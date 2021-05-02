@@ -4,5 +4,3 @@ Since Raft is a leader-based approach to consensus, we decompose this project in
 • Leader Election: Following the Raft leader election protocol, there will be exactly one leader, and two followers after the leader election stage.
 • Normal Operations: Maintaining the blockchain by generating Hash with SHA256 encryption, leader handles messages to servers and commits the transcation when majority acknowledgements are received from followers.
 • Fault Tolerance: Node Failure, network partition and node recovery
-
-
